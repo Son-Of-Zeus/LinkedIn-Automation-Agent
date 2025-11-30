@@ -1,0 +1,96 @@
+@import "tailwindcss";
+@import url('https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,200;12..96,400;12..96,700;12..96,800&family=Martian+Mono:wght@300;400;600&display=swap');
+
+:root {
+  --black: #0d0d0d;
+  --white: #f8f8f6;
+  --grey: #a3a3a0;
+  --red: #ff3b30;
+  --yellow: #ffd60a;
+  --green: #32d74b;
+  --blue: #0a84ff;
+}
+
+/* Dark theme (default) */
+[data-theme="dark"] {
+  --bg: #0d0d0d;
+  --bg-secondary: #111;
+  --bg-tertiary: #1a1a1a;
+  --text: #f8f8f6;
+  --text-muted: #666;
+  --text-subtle: #333;
+  --border: #1a1a1a;
+  --border-strong: #333;
+  --node-bg: #0d0d0d;
+  --node-text: #f8f8f6;
+  --node-text-muted: #888;
+  --node-border: #333;
+  --node-handle: #f8f8f6;
+}
+
+/* Light theme */
+[data-theme="light"] {
+  --bg: #fafaf9;
+  --bg-secondary: #f5f5f4;
+  --bg-tertiary: #e7e5e4;
+  --text: #1c1917;
+  --text-muted: #57534e;
+  --text-subtle: #a8a29e;
+  --border: #e7e5e4;
+  --border-strong: #d6d3d1;
+  --node-bg: #ffffff;
+  --node-text: #1c1917;
+  --node-text-muted: #78716c;
+  --node-border: #d6d3d1;
+  --node-handle: #57534e;
+}
+
+html, body, #root {
+  height: 100%;
+  margin: 0;
+  overflow: hidden;
+}
+
+body {
+  background: var(--bg);
+  color: var(--text);
+  font-family: 'Bricolage Grotesque', system-ui, sans-serif;
+  transition: background 0.3s ease, color 0.3s ease;
+}
+
+.font-mono {
+  font-family: 'Martian Mono', monospace !important;
+  letter-spacing: -0.02em;
+}
+
+/*Scrollbar*/
+::-webkit-scrollbar { width: 4px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb { background: var(--text-muted); }
+
+/* ReactFlow */
+.react-flow__background { background: var(--bg) !important; }
+.react-flow__controls {
+  background: var(--bg) !important;
+  border: 1px solid var(--border-strong) !important;
+  border-radius: 0 !important;
+}
+.react-flow__controls-button {
+  background: var(--bg) !important;
+  border: none !important;
+  border-bottom: 1px solid var(--border) !important;
+  color: var(--text) !important;
+  border-radius: 0 !important;
+  fill: var(--text) !important;
+}
+.react-flow__controls-button:hover { background: var(--bg-secondary) !important; }
+.react-flow__controls-button:last-child { border-bottom: none !important; }
+.react-flow__controls-button svg { fill: var(--text) !important; }
+
+@keyframes blink { 0%, 100% { opacity: 1; } 50% { opacity: 0; } }
+@keyframes scan { from { transform: translateY(-100%); } to { transform: translateY(100vh); } }
+@keyframes pulse-ring { 0% { transform: scale(0.8); opacity: 1; } 100% { transform: scale(1.4); opacity: 0; } }
+@keyframes count-up { from { opacity: 0; transform: translateY(10px); } to { opacity: 1; transform: translateY(0); } }
+@keyframes slide-in { from { transform: translateX(-20px); opacity: 0; } to { transform: translateX(0); opacity: 1; } }
+@keyframes collapse { from { width: 380px; } to { width: 56px; } }
+@keyframes expand { from { width: 56px; } to { width: 380px; } }
