@@ -1,4 +1,4 @@
-import { useEffect, useRef, useCallback, useState } from 'react';
+import { useEffect, useRef, useCallback } from 'react';
 
 
 //socket.io connection hook
@@ -32,15 +32,6 @@ export function useSocketConnection(socket, handlers) {
       });
     };
   }, [socket]); 
-}
-
-//Focus management hook
-export function useFocusManagement(ref, shouldFocus) {
-  useEffect(() => {
-    if (shouldFocus && ref.current) {
-      ref.current.focus();
-    }
-  }, [shouldFocus, ref]);
 }
 
 //Focus Trap hook
@@ -113,30 +104,4 @@ export function useStableCallback(callback) {
   return useCallback((...args) => {
     return callbackRef.current(...args);
   }, []);
-}
-
-//Previous value hook
-export function usePrevious(value) {
-  const ref = useRef();
-  useEffect(() => {
-    ref.current = value;
-  }, [value]);
-  return ref.current;
-}
-export function useIntersectionObserver(ref, options = {}) {
-  const [isIntersecting, setIsIntersecting] = useState(false);
-  
-  useEffect(() => {
-    if (!ref.current) return;
-    
-    const observer = new IntersectionObserver(([entry]) => {
-      setIsIntersecting(entry.isIntersecting);
-    }, options);
-    
-    observer.observe(ref.current);
-    
-    return () => observer.disconnect();
-  }, [ref, options.threshold, options.root, options.rootMargin]);
-  
-  return isIntersecting;
 }
