@@ -1,6 +1,6 @@
 # LinkedIn Automation Agent
 
-A full-stack automation tool for LinkedIn profile outreach campaigns using BrowserBase for persistent browser sessions.
+A full-stack automation tool for LinkedIn profile outreach campaigns using Browserbase for persistent browser sessions.
 
 ## Features
 
@@ -23,13 +23,13 @@ A full-stack automation tool for LinkedIn profile outreach campaigns using Brows
 **Backend:**
 - Node.js + Express
 - Socket.io for WebSocket communication
-- Playwright + BrowserBase for browser automation
+- Playwright + Browserbase for browser automation
 - dotenv for environment management
 
 ## Prerequisites
 
 - Node.js (v18 or higher)
-- BrowserBase account
+- Browserbase account
 - LinkedIn account
 
 ## Installation
@@ -56,6 +56,7 @@ A full-stack automation tool for LinkedIn profile outreach campaigns using Brows
    Create a `.env` file in the `server/` directory:
    ```env
    BROWSERBASE_API_KEY=your_api_key_here
+   # Optional: if omitted, Browserbase infers project from your API key
    BROWSERBASE_PROJECT_ID=your_project_id_here
    ```
 
@@ -80,8 +81,8 @@ npm run dev
 
 1. **Start the application** using either method above
 2. **Open your browser** to `http://localhost:5173`
-3. **Click the Debug URL** shown in the server.js console log to access the BrowserBase browser
-4. **Login to LinkedIn** in the BrowserBase browser
+3. **Click the Debug URL** shown in the server.js console log to access the Browserbase browser
+4. **Login to LinkedIn** in the Browserbase browser
 5. **Refresh the page** to unlock controls
 6. **Configure your workflow:**
    - Click `[+]` to add actions (Visit, Connect, Like, Message)
@@ -109,7 +110,7 @@ Force killing the process
 ```
 
 The server needs time to:
-- Save the browser session to BrowserBase
+- Save the browser session to Browserbase
 - Release the context properly
 - Store cookies for next run
 
@@ -117,7 +118,7 @@ If you force-kill the server, you may lose your LinkedIn login session.
 
 ### Context Management
 
-- **First run**: Creates a new BrowserBase context (saves to `.env`)
+- **First run**: Creates a new Browserbase context (saves to `.env`)
 - **Subsequent runs**: Reuses existing context (keeps cookies/session)
 - **To reset**: Delete `CONTEXT_ID` from `server/.env` or run `node deleteContext.js <context-id>`
 
@@ -140,7 +141,8 @@ If you force-kill the server, you may lose your LinkedIn login session.
 - If lost, delete `CONTEXT_ID` and login again
 
 ### Browser session disconnected
-- BrowserBase sessions timeout after inactivity
+- Browserbase sessions can still end due to timeout, release, or unexpected disconnects
+- The server sends periodic CDP heartbeat pings to reduce idle disconnects
 - Restart the server to create a new session
 - Context will be reused (cookies preserved)
 
@@ -173,5 +175,5 @@ This tool is for educational purposes. Use responsibly and comply with LinkedIn'
 
 For issues or questions:
 - Check the Troubleshooting section above
-- Review BrowserBase documentation
+- Review Browserbase documentation
 - Check Playwright documentation for selector issues

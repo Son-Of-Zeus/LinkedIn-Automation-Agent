@@ -25,6 +25,7 @@ import { useFocusTrap, useStableCallback, useDebouncedCallback } from './hooks/u
 
 const API_BASE = 'http://localhost:3001';
 const POLL_INTERVAL = 1000; // Poll every 1 second
+const SESSION_POLL_INTERVAL = 3000;
 
 const Metric = memo(function Metric({ value, label, color = 'var(--text)' }) {
   return (
@@ -58,23 +59,47 @@ const LoadingFallback = memo(function LoadingFallback() {
   );
 });
 
-// Login overlay
-const LoginOverlay = memo(function LoginOverlay() {
+// Login overlay with debug iframe
+const LoginOverlay = memo(function LoginOverlay({ iframeUrl, onRefresh }) {
   return (
     <div
       className="absolute inset-0 flex items-center justify-center"
       style={{ background: 'var(--bg)', opacity: 0.95 }}
     >
-      <div className="text-center p-8 border" style={{ background: 'var(--bg)', borderColor: 'var(--border-strong)' }}>
-        <div className="w-12 h-12 mx-auto mb-4 border-2 flex items-center justify-center" style={{ borderColor: '#ff375f' }}>
-          <span className="text-2xl">🔒</span>
+      <div className="w-[min(1000px,92vw)] h-[min(700px,88vh)] p-4 border flex flex-col" style={{ background: 'var(--bg)', borderColor: 'var(--border-strong)' }}>
+        <div className="flex items-center justify-between gap-4 pb-3 border-b" style={{ borderColor: 'var(--border)' }}>
+          <div>
+            <div className="font-mono text-sm tracking-wider" style={{ color: 'var(--text)' }}>LOGIN REQUIRED</div>
+            <div className="font-mono text-[11px]" style={{ color: 'var(--text-muted)' }}>
+              Sign in inside this iframe. The app keeps checking auth and unlocks automatically.
+            </div>
+          </div>
+          <button
+            onClick={onRefresh}
+            className="px-3 py-2 border font-mono text-[10px] tracking-widest hover:opacity-80"
+            style={{ borderColor: 'var(--border-strong)', color: 'var(--text)' }}
+          >
+            REFRESH
+          </button>
         </div>
-        <div className="font-mono text-sm tracking-wider mb-2" style={{ color: 'var(--text)' }}>LOGIN REQUIRED</div>
-        <div className="font-mono text-[11px] max-w-[280px]" style={{ color: 'var(--text-muted)' }}>
-          Please Click on the Debug URL and login to the browserinstance. After logging in please refresh this page.
-          If already logged in, please wait while the agent logs into your account.
+        <div className="flex-1 mt-3 border overflow-hidden" style={{ borderColor: 'var(--border-strong)', background: 'var(--bg-secondary)' }}>
+          {iframeUrl ? (
+            <iframe
+              src={iframeUrl}
+              title="Debug Login View"
+              className="w-full h-full"
+              style={{ border: 0, background: 'var(--bg)' }}
+              allow="clipboard-read; clipboard-write"
+            />
+          ) : (
+            <div className="w-full h-full flex items-center justify-center">
+              <span className="font-mono text-[11px] tracking-widest" style={{ color: 'var(--text-subtle)' }}>
+                WAITING FOR DEBUG URL
+              </span>
+            </div>
+          )}
         </div>
-        <div className="mt-4 flex items-center justify-center gap-2">
+        <div className="pt-3 flex items-center justify-center gap-2">
           <span className="w-2 h-2 animate-pulse" style={{ background: '#ff375f' }} />
           <span className="font-mono text-[10px] tracking-widest" style={{ color: 'var(--text-muted)' }}>WAITING FOR AUTH</span>
         </div>
@@ -226,6 +251,79 @@ const LogPanel = memo(function LogPanel({ logs, isRunning, onClear }) {
   );
 });
 
+const LiveViewPanel = memo(function LiveViewPanel({ liveViewUrl }) {
+  const [isFullscreen, setIsFullscreen] = useState(false);
+  const [panelSize, setPanelSize] = useState({ width: 620, height: 420 });
+  const panelRef = useRef(null);
+
+  useEffect(() => {
+    if (!panelRef.current || isFullscreen) return;
+
+    const observer = new ResizeObserver((entries) => {
+      const entry = entries[0];
+      if (!entry) return;
+      setPanelSize({
+        width: Math.round(entry.contentRect.width),
+        height: Math.round(entry.contentRect.height),
+      });
+    });
+
+    observer.observe(panelRef.current);
+    return () => observer.disconnect();
+  }, [isFullscreen]);
+
+  return (
+    <div
+      ref={panelRef}
+      className={`absolute border overflow-hidden ${isFullscreen ? 'inset-3 z-50' : 'right-3 bottom-3 z-20'}`}
+      style={{
+        background: 'var(--bg-secondary)',
+        borderColor: 'var(--border-strong)',
+        width: isFullscreen ? 'auto' : `${panelSize.width}px`,
+        height: isFullscreen ? 'auto' : `${panelSize.height}px`,
+        minWidth: isFullscreen ? undefined : '360px',
+        minHeight: isFullscreen ? undefined : '240px',
+        maxWidth: isFullscreen ? undefined : 'calc(100vw - 24px)',
+        maxHeight: isFullscreen ? undefined : 'calc(100vh - 24px)',
+        resize: isFullscreen ? 'none' : 'both',
+      }}
+    >
+      <div className="absolute top-2 right-2 z-10 flex items-center gap-2">
+        <button
+          onClick={() => setIsFullscreen((prev) => !prev)}
+          className="px-2.5 py-1 border font-mono text-[10px] tracking-widest"
+          style={{
+            background: 'color-mix(in srgb, var(--bg) 82%, transparent)',
+            borderColor: 'var(--border-strong)',
+            color: 'var(--text)',
+            backdropFilter: 'blur(2px)',
+          }}
+        >
+          {isFullscreen ? 'EXIT' : 'FULL'}
+        </button>
+      </div>
+      {liveViewUrl ? (
+        <iframe
+          src={liveViewUrl}
+          title="Browserbase Live View"
+          className="w-full h-full"
+          style={{ border: 0, background: 'var(--bg)' }}
+          allow="clipboard-read; clipboard-write"
+        />
+      ) : (
+        <div
+          className="w-full flex items-center justify-center"
+          style={{ height: '100%', background: 'var(--bg)' }}
+        >
+          <span className="font-mono text-[11px] tracking-widest" style={{ color: 'var(--text-subtle)' }}>
+            LIVE URL NOT AVAILABLE YET
+          </span>
+        </div>
+      )}
+    </div>
+  );
+});
+
 // Edit Panel
 const InlineEditPanel = memo(function InlineEditPanel({
   selectedAction,
@@ -350,6 +448,24 @@ const InlineEditPanel = memo(function InlineEditPanel({
 
 //Main APp
 export default function App() {
+  const getDebugViewUrl = useCallback((sessionData = {}) => {
+    return (
+      sessionData?.liveUrls?.debuggerFullscreenUrl ||
+      sessionData?.liveUrls?.debuggerUrl ||
+      sessionData?.debugUrl ||
+      ''
+    );
+  }, []);
+
+  const getLiveViewUrl = useCallback((sessionData = {}) => {
+    return (
+      sessionData?.liveUrls?.debuggerFullscreenUrl ||
+      sessionData?.liveUrls?.debuggerUrl ||
+      sessionData?.debugUrl ||
+      ''
+    );
+  }, []);
+
   // ReactFlow stuff
   const [nodes, setNodes, onNodesChange] = useNodesState([]);
   const [edges, setEdges, onEdgesChange] = useEdgesState([]);
@@ -357,6 +473,8 @@ export default function App() {
   // App stuff
   const [connected, setConnected] = useState(false);
   const [loggedIn, setLoggedIn] = useState(false);
+  const [debugViewUrl, setDebugViewUrl] = useState('');
+  const [liveViewUrl, setLiveViewUrl] = useState('');
   const [logs, setLogs] = useState([]);
   const [stats, setStats] = useState({ current: 0, total: 0 });
   const [workflow, setWorkflow] = useState([{ type: 'visit', delayMs: 0 }]);
@@ -372,6 +490,7 @@ export default function App() {
   const inputRef = useRef(null);
   const lastEventIdRef = useRef(0);
   const pollIntervalRef = useRef(null);
+  const sessionPollIntervalRef = useRef(null);
 
 
   useEffect(() => {
@@ -411,6 +530,8 @@ export default function App() {
           break;
         case 'agent-session-start':
           setConnected(true);
+          setDebugViewUrl(getDebugViewUrl(event.data));
+          setLiveViewUrl(getLiveViewUrl(event.data));
           addLog(`SESSION: ${event.data.sessionId?.slice(0, 8)}...`);
           break;
         case 'node-update': {
@@ -484,7 +605,29 @@ export default function App() {
           break;
       }
     });
-  }, [addLog, setNodes, setEdges]);
+  }, [addLog, getDebugViewUrl, getLiveViewUrl, setNodes, setEdges]);
+
+  const refreshSession = useCallback(async ({ logErrors = true } = {}) => {
+    try {
+      const res = await fetch(`${API_BASE}/api/session`);
+      const data = await res.json();
+
+      if (data.connected) {
+        setConnected(true);
+        setDebugViewUrl(getDebugViewUrl(data));
+        setLiveViewUrl(getLiveViewUrl(data));
+      }
+
+      if (data.loggedIn !== undefined) {
+        setLoggedIn(data.loggedIn);
+      }
+
+      return data;
+    } catch (error) {
+      if (logErrors) addLog(`ERROR: ${error.message}`);
+      return null;
+    }
+  }, [addLog, getDebugViewUrl, getLiveViewUrl]);
 
   // Poll for campaign status
   const pollStatus = useCallback(async () => {
@@ -523,25 +666,39 @@ export default function App() {
   // Fetch initial session on mount
   useEffect(() => {
     const fetchSession = async () => {
-      try {
-        const res = await fetch(`${API_BASE}/api/session`);
-        const data = await res.json();
-
-        if (data.connected) {
-          setConnected(true);
-          addLog(`SESSION: ${data.sessionId?.slice(0, 8)}...`);
-        }
-        if (data.loggedIn !== undefined) {
-          setLoggedIn(data.loggedIn);
-          addLog(data.loggedIn ? 'AUTH: Logged in' : 'AUTH: Not logged in - check Live View');
-        }
-      } catch (error) {
-        addLog(`ERROR: ${error.message}`);
+      const data = await refreshSession();
+      if (data?.connected) {
+        addLog(`SESSION: ${data.sessionId?.slice(0, 8)}...`);
+      }
+      if (data?.loggedIn !== undefined) {
+        addLog(data.loggedIn ? 'AUTH: Logged in' : 'AUTH: Not logged in - use debug iframe');
       }
     };
 
     fetchSession();
-  }, [addLog]);
+  }, [addLog, refreshSession]);
+
+  // While unauthenticated, keep checking login and debug URL state.
+  useEffect(() => {
+    if (!connected || loggedIn) {
+      if (sessionPollIntervalRef.current) {
+        clearInterval(sessionPollIntervalRef.current);
+        sessionPollIntervalRef.current = null;
+      }
+      return;
+    }
+
+    sessionPollIntervalRef.current = setInterval(() => {
+      refreshSession({ logErrors: false });
+    }, SESSION_POLL_INTERVAL);
+
+    return () => {
+      if (sessionPollIntervalRef.current) {
+        clearInterval(sessionPollIntervalRef.current);
+        sessionPollIntervalRef.current = null;
+      }
+    };
+  }, [connected, loggedIn, refreshSession]);
 
   const buildFlow = useCallback(() => {
     const wf = workflowRef.current;
@@ -883,7 +1040,14 @@ export default function App() {
             <div className="absolute top-3 left-3 font-mono text-[9px]" style={{ color: 'var(--text-subtle)' }}>WORKFLOW</div>
             <div className="absolute bottom-3 right-3 font-mono text-[9px]" style={{ color: 'var(--text-subtle)' }}>{workflow.length} NODES</div>
 
-            {connected && !loggedIn && <LoginOverlay />}
+            <LiveViewPanel liveViewUrl={liveViewUrl} />
+
+            {!loggedIn && (
+              <LoginOverlay
+                iframeUrl={debugViewUrl || liveViewUrl}
+                onRefresh={() => refreshSession()}
+              />
+            )}
 
             <Suspense fallback={<LoadingFallback />}>
               <InlineEditPanel

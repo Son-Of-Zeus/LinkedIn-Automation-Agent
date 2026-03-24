@@ -1,6 +1,5 @@
 import express from 'express';
-import { createServer } from 'http';
-import { Server } from 'socket.io';
+import cors from 'cors';
 import { chromium } from 'playwright-core';
 import { Browserbase } from '@browserbasehq/sdk';
 import dotenv from 'dotenv';
@@ -14,25 +13,28 @@ const envPath = path.join(__dirname, '.env');
 dotenv.config({ path: envPath });
 
 const app = express();
-const httpServer = createServer(app);
-const io = new Server(httpServer, { 
-  cors: { origin: "http://localhost:5173", methods: ["GET", "POST"] }
-});
+app.use(cors({ origin: "http://localhost:5173" }));
+app.use(express.json());
 
 const BROWSERBASE_API_KEY = process.env.BROWSERBASE_API_KEY;
 const BROWSERBASE_PROJECT_ID = process.env.BROWSERBASE_PROJECT_ID;
 let CONTEXT_ID = process.env.CONTEXT_ID || '';
 
+if (!BROWSERBASE_API_KEY) {
+  console.error('Missing BROWSERBASE_API_KEY in server/.env');
+  process.exit(1);
+}
+
 function saveContextIdToEnv(contextId) {
   try {
     let envContent = fs.existsSync(envPath) ? fs.readFileSync(envPath, 'utf8') : '';
-    
+
     if (envContent.includes('CONTEXT_ID=')) {
       envContent = envContent.replace(/CONTEXT_ID=.*/, `CONTEXT_ID="${contextId}"`);
     } else {
       envContent += `\nCONTEXT_ID="${contextId}"`;
     }
-    
+
     fs.writeFileSync(envPath, envContent.trim() + '\n');
     console.log(`Context ID saved to .env: ${contextId}`);
   } catch (error) {
@@ -44,20 +46,75 @@ const bb = new Browserbase({ apiKey: BROWSERBASE_API_KEY });
 
 let globalSession = null;
 let currentContextId = null;
-let keepAliveInterval = null;
 let isShuttingDown = false;
 let isInitializing = false;
 
+// Job state management for polling
+let currentJob = null;
+let jobEvents = [];
+let eventIdCounter = 0;
+let heartbeatInterval = null;
+
+const CDP_HEARTBEAT_INTERVAL_MS = 5 * 60 * 1000;
+
 const sleep = ms => new Promise(r => setTimeout(r, ms));
 
+// Add event to the queue for polling
+function addEvent(type, data = {}) {
+  jobEvents.push({
+    id: ++eventIdCounter,
+    type,
+    data,
+    timestamp: Date.now()
+  });
+  // Keep only last 100 events
+  if (jobEvents.length > 100) {
+    jobEvents = jobEvents.slice(-100);
+  }
+}
+
+function withOptionalProjectId(payload = {}) {
+  if (BROWSERBASE_PROJECT_ID) {
+    return { ...payload, projectId: BROWSERBASE_PROJECT_ID };
+  }
+  return payload;
+}
+
+function stopHeartbeat() {
+  if (heartbeatInterval) {
+    clearInterval(heartbeatInterval);
+    heartbeatInterval = null;
+  }
+}
+
+function startHeartbeat(page) {
+  stopHeartbeat();
+
+  // Browserbase CDP connections can close after inactivity; keep the page warm.
+  heartbeatInterval = setInterval(async () => {
+    if (!globalSession?.browser?.isConnected()) {
+      stopHeartbeat();
+      return;
+    }
+
+    try {
+      await page.evaluate(() => undefined);
+    } catch {
+      stopHeartbeat();
+      if (!isShuttingDown) {
+        globalSession = null;
+      }
+    }
+  }, CDP_HEARTBEAT_INTERVAL_MS);
+}
+
 async function createContext() {
-  const context = await bb.contexts.create({ projectId: BROWSERBASE_PROJECT_ID });
+  const context = await bb.contexts.create(withOptionalProjectId());
   return context.id;
 }
 
 async function createSession(contextId) {
-  const session = await bb.sessions.create({
-    projectId: BROWSERBASE_PROJECT_ID,
+  const session = await bb.sessions.create(withOptionalProjectId({
     keepAlive: true,
     timeout: 3600,
     proxies: true,
@@ -65,38 +122,36 @@ async function createSession(contextId) {
       blockAds: true,
       context: { id: contextId, persist: true },
     },
-  });
+  }));
   return session;
 }
 
-async function initSession(socket, emitEvents = true) {
+async function initSession(emitEvents = true) {
   if (globalSession?.browser?.isConnected()) {
-    // Session already exists... just return it without emitting events
     return globalSession;
   }
 
   if (globalSession) {
     globalSession = null;
-    if (keepAliveInterval) {
-      clearInterval(keepAliveInterval);
-      keepAliveInterval = null;
-    }
   }
 
   if (isInitializing) {
     while (isInitializing) await sleep(500);
     if (globalSession?.browser?.isConnected()) {
-      socket.emit('agent-session-start', {
-        debugUrl: globalSession.debugUrl,
-        sessionId: globalSession.sessionId,
-        contextId: currentContextId,
-      });
+      if (emitEvents) {
+        addEvent('agent-session-start', {
+          debugUrl: globalSession.debugUrl,
+          liveUrls: globalSession.liveUrls,
+          sessionId: globalSession.sessionId,
+          contextId: currentContextId,
+        });
+      }
       return globalSession;
     }
   }
 
   isInitializing = true;
-  socket.emit('session-init', { message: 'Initializing session...' });
+  addEvent('session-init', { message: 'Initializing session...' });
 
   try {
     if (CONTEXT_ID) {
@@ -110,47 +165,47 @@ async function initSession(socket, emitEvents = true) {
 
     const session = await createSession(currentContextId);
     const debug = await bb.sessions.debug(session.id);
-    const debugUrl = debug.debuggerFullscreenUrl;
+    const liveUrls = {
+      debuggerFullscreenUrl: debug.debuggerFullscreenUrl,
+      debuggerUrl: debug.debuggerUrl,
+      wsUrl: debug.wsUrl,
+      pages: debug.pages,
+    };
+    const debugUrl = debug.debuggerFullscreenUrl || debug.debuggerUrl;
 
     console.log(`\nDebug url: ${debugUrl}\n`);
 
     const browser = await chromium.connectOverCDP(session.connectUrl, { timeout: 30000 });
-    
+
     browser.on('disconnected', () => {
+      stopHeartbeat();
       if (!isShuttingDown) globalSession = null;
     });
 
     const context = browser.contexts()[0];
     const page = context.pages()[0] || await context.newPage();
-    
+
     page.setDefaultNavigationTimeout(60000);
     page.setDefaultTimeout(30000);
+    startHeartbeat(page);
 
-    globalSession = { browser, page, sessionId: session.id, debugUrl };
+    globalSession = { browser, page, sessionId: session.id, debugUrl, liveUrls };
 
-    if (keepAliveInterval) clearInterval(keepAliveInterval);
-    keepAliveInterval = setInterval(async () => {
-      if (globalSession?.page && !isShuttingDown) {
-        try { await globalSession.page.evaluate(() => 1); } catch {}
-      }
-    }, 30000);
+    addEvent('agent-session-start', { debugUrl, liveUrls, sessionId: session.id, contextId: currentContextId });
 
-    socket.emit('agent-session-start', { debugUrl, sessionId: session.id, contextId: currentContextId });
-    
     // Check if user is logged in by visiting LinkedIn
     try {
       await page.goto('https://www.linkedin.com/', { waitUntil: 'domcontentloaded', timeout: 30000 });
       await sleep(2000);
-      
+
       const url = page.url();
-      // If redirected to login page the user isn't logged in
       if (url.includes('/login') || url.includes('/checkpoint')) {
-        socket.emit('login-status', { loggedIn: false });
+        addEvent('login-status', { loggedIn: false });
       } else {
-        socket.emit('login-status', { loggedIn: true });
+        addEvent('login-status', { loggedIn: true });
       }
     } catch (error) {
-      socket.emit('login-status', { loggedIn: false });
+      addEvent('login-status', { loggedIn: false });
     }
 
     isInitializing = false;
@@ -158,12 +213,11 @@ async function initSession(socket, emitEvents = true) {
 
   } catch (error) {
     isInitializing = false;
-    socket.emit('agent-error', { message: error.message });
+    addEvent('agent-error', { message: error.message });
     throw error;
   }
 }
 
-//The selectors for selecting the right element
 const SELECTORS = {
   profileName: 'h1.inline.v-align-middle',
   profileHeadline: 'div.text-body-medium.break-words',
@@ -187,31 +241,29 @@ async function findElement(page, selector) {
 
 const ACTION_HANDLERS = {
   visit: {
-    execute: async (page, profileUrl, socket, index) => {
-      socket.emit('node-update', { nodeId: `action-${index}`, status: 'active' });
-      
+    execute: async (page, profileUrl, index) => {
+      addEvent('node-update', { nodeId: `action-${index}`, status: 'active' });
+
       await page.goto(profileUrl, { waitUntil: 'domcontentloaded' });
       await sleep(2000);
-      await page.evaluate(() => window.scrollBy(0, 300));      
+      await page.evaluate(() => window.scrollBy(0, 300));
       let name = '', headline = '';
       const nameEl = await findElement(page, SELECTORS.profileName);
-      if (nameEl) 
-      {
+      if (nameEl) {
         name = (await nameEl.innerText()).trim();
       }
-      
+
       const headEl = await findElement(page, SELECTORS.profileHeadline);
-      if (headEl)
-        {
-          headline = (await headEl.innerText()).trim();
-        }      
-      socket.emit('node-update', { nodeId: `action-${index}`, status: 'completed', data: { name, headline } });
+      if (headEl) {
+        headline = (await headEl.innerText()).trim();
+      }
+      addEvent('node-update', { nodeId: `action-${index}`, status: 'completed', data: { name, headline } });
       return { success: true, data: { name, headline } };
     }
   },
   connect: {
-    execute: async (page, profileUrl, socket, index, options = {}) => {
-      socket.emit('node-update', { nodeId: `action-${index}`, status: 'active' });
+    execute: async (page, profileUrl, index, options = {}) => {
+      addEvent('node-update', { nodeId: `action-${index}`, status: 'active' });
       const btn = await findElement(page, SELECTORS.connectButton);
       if (btn) {
         await btn.scrollIntoViewIfNeeded();
@@ -223,7 +275,7 @@ const ACTION_HANDLERS = {
           if (addNoteBtn) {
             await addNoteBtn.click();
             await sleep(500);
-            
+
             const textarea = page.locator(SELECTORS.textArea).first();
             if (await textarea.count() > 0) {
               let msg = options.message;
@@ -235,7 +287,7 @@ const ACTION_HANDLERS = {
               }
               await textarea.fill(msg);
               await sleep(500);
-              
+
               const sendBtn = await findElement(page, SELECTORS.sendBtn);
               if (sendBtn) {
                 await sendBtn.click();
@@ -257,38 +309,34 @@ const ACTION_HANDLERS = {
           }
         }
       }
-      else
-      { 
-        //Custom selector for more button (two buttons had the same structure :( )
-        const allMoreButtons = await page.locator('button[aria-label="More actions"]').all();        
+      else {
+        const allMoreButtons = await page.locator('button[aria-label="More actions"]').all();
         let moreBtn = allMoreButtons[1];
         if (moreBtn) {
           await sleep(100);
           await moreBtn.click();
-          await sleep(1500);          
+          await sleep(1500);
           const cbtn = page.locator('.artdeco-dropdown__item[aria-label*="to connect"]').last();
           if (await cbtn.count() > 0) {
             await cbtn.click();
-            await sleep(1500);         
+            await sleep(1500);
             if (options.message && options.message.trim()) {
               const addNoteBtn = await findElement(page, SELECTORS.addNoteBtn);
               if (addNoteBtn) {
                 await addNoteBtn.click();
-                await sleep(500);        
+                await sleep(500);
                 const textarea = page.locator(SELECTORS.textArea).first();
                 if (await textarea.count() > 0) {
                   let msg = options.message;
                   if (options.profileData) {
-                    //First name
                     const firstName = options.profileData.name?.split(' ')[0] || '';
-                    //Last name
                     const lastName = options.profileData.name?.split(' ').slice(1).join(' ') || '';
                     msg = msg.replace(/\{\{firstName\}\}/g, firstName);
                     msg = msg.replace(/\{\{lastName\}\}/g, lastName);
                   }
                   await textarea.fill(msg);
                   await sleep(500);
-                  
+
                   const sendBtn = await findElement(page, SELECTORS.sendBtn);
                   if (sendBtn) {
                     await sendBtn.click();
@@ -309,137 +357,239 @@ const ACTION_HANDLERS = {
                 }
               }
             }
-          } 
+          }
         }
       }
-      socket.emit('node-update', { nodeId: `action-${index}`, status: 'completed', data: { connected: !!btn } });
+      addEvent('node-update', { nodeId: `action-${index}`, status: 'completed', data: { connected: !!btn } });
       return { success: !!btn };
     }
   },
   like: {
-    execute: async (page, profileUrl, socket, index) => {
-      socket.emit('node-update', { nodeId: `action-${index}`, status: 'active' });
+    execute: async (page, profileUrl, index) => {
+      addEvent('node-update', { nodeId: `action-${index}`, status: 'active' });
       await page.evaluate(() => window.scrollBy(0, 800));
       await sleep(1000);
       const btn = await findElement(page, SELECTORS.likeButton);
       if (btn) {
         await btn.click();
       }
-      socket.emit('node-update', { nodeId: `action-${index}`, status: 'completed', data: { liked: !!btn } });
+      addEvent('node-update', { nodeId: `action-${index}`, status: 'completed', data: { liked: !!btn } });
       return { success: !!btn };
     }
   }
 };
 
-async function runWorkflow(socket, profileUrl, workflow) {
-  const session = await initSession(socket, false);
+async function runWorkflow(profileUrl, workflow) {
+  const session = await initSession(false);
   const { page } = session;
   const results = [];
   let profileData = {};
 
   for (let i = 0; i < workflow.length; i++) {
+    // Check if job was stopped
+    if (currentJob?.status === 'stopped') {
+      break;
+    }
+
     const action = typeof workflow[i] === 'string' ? { type: workflow[i] } : workflow[i];
     const handler = ACTION_HANDLERS[action.type];
-    
+
     if (handler) {
       try {
         const options = {
           message: action.message,
           profileData
         };
-        
-        const result = await handler.execute(page, profileUrl, socket, i, options);
-        
+
+        const result = await handler.execute(page, profileUrl, i, options);
+
         if (action.type === 'visit' && result.data) {
           profileData = result.data;
         }
-        
+
         if (action.delayMs) await sleep(action.delayMs);
         results.push({ action: action.type, ...result });
       } catch (e) {
-        socket.emit('node-update', { nodeId: `action-${i}`, status: 'error' });
+        addEvent('node-update', { nodeId: `action-${i}`, status: 'error' });
       }
     }
   }
   return { status: 'completed', results };
 }
 
-async function checkLoginStatus(socket, navigate = false) {
-  if (!globalSession?.page) return;
+async function checkLoginStatus(navigate = false) {
+  if (!globalSession?.page) return { loggedIn: false };
   try {
     const url = globalSession.page.url();
     if (url.includes('/feed') || url.includes('/in/')) {
-      socket.emit('login-status', { loggedIn: true });
+      return { loggedIn: true };
     } else if (navigate) {
-      // Only navigate if requested
       await globalSession.page.goto('https://www.linkedin.com/feed/', { waitUntil: 'domcontentloaded', timeout: 30000 });
       const newUrl = globalSession.page.url();
-      socket.emit('login-status', { loggedIn: newUrl.includes('/feed') });
+      return { loggedIn: newUrl.includes('/feed') };
     } else {
-
-      // Just report based on current URL without navigating
-      socket.emit('login-status', { loggedIn: false });
+      return { loggedIn: false };
     }
   } catch {
-    socket.emit('login-status', { loggedIn: false });
+    return { loggedIn: false };
   }
 }
 
-io.on('connection', (socket) => {
-  socket.on('get-session', async () => {
-    if (globalSession?.browser?.isConnected()) {
-      socket.emit('agent-session-start', {
-        debugUrl: globalSession.debugUrl,
-        sessionId: globalSession.sessionId,
-        contextId: currentContextId,
-      });
-      // Check login status without navigating
-      await checkLoginStatus(socket, false);
-    } else if (!isInitializing) {
-      await initSession(socket, true);
-    } else {
-      while (isInitializing) await sleep(500);
-      if (globalSession?.browser?.isConnected()) {
-        socket.emit('agent-session-start', {
-          debugUrl: globalSession.debugUrl,
-          sessionId: globalSession.sessionId,
-          contextId: currentContextId,
-        });
-        await checkLoginStatus(socket, false);
-      }
-    }
-  });
+// Run campaign in background
+async function runCampaign(urls, workflow) {
+  currentJob = {
+    id: Date.now().toString(),
+    status: 'running',
+    current: 0,
+    total: urls.length,
+    startedAt: Date.now()
+  };
 
-  socket.on('start-campaign', async ({ urls, workflow }) => {
+  try {
     if (!globalSession?.browser?.isConnected()) {
-      await initSession(socket, true);
+      await initSession(true);
     }
     if (!globalSession) {
-      socket.emit('agent-error', { message: 'No browser session' });
+      addEvent('agent-error', { message: 'No browser session' });
+      currentJob.status = 'error';
       return;
     }
-    
+
     const actions = workflow?.length ? workflow : [{ type: 'visit' }];
 
     for (let i = 0; i < urls.length; i++) {
-      await runWorkflow(socket, urls[i], actions);
-      socket.emit('campaign-progress', { current: i + 1, total: urls.length });
-      if (i < urls.length - 1) await sleep(5000);
-      socket.emit('reset-graph');
-    }
-    socket.emit('campaign-finished');
-  });
+      if (currentJob.status === 'stopped') {
+        break;
+      }
 
-  socket.on('save-session', async () => await shutdown());
+      await runWorkflow(urls[i], actions);
+      currentJob.current = i + 1;
+      addEvent('campaign-progress', { current: i + 1, total: urls.length });
+      if (i < urls.length - 1) await sleep(5000);
+      addEvent('reset-graph');
+    }
+
+    if (currentJob.status !== 'stopped') {
+      currentJob.status = 'finished';
+      addEvent('campaign-finished');
+    }
+  } catch (error) {
+    currentJob.status = 'error';
+    addEvent('agent-error', { message: error.message });
+  }
+}
+
+// REST API Endpoints
+
+// Get session status and initialize if needed
+app.get('/api/session', async (req, res) => {
+  try {
+    if (globalSession?.browser?.isConnected()) {
+      const loginStatus = await checkLoginStatus(false);
+      res.json({
+        connected: true,
+        debugUrl: globalSession.debugUrl,
+        liveUrls: globalSession.liveUrls,
+        sessionId: globalSession.sessionId,
+        contextId: currentContextId,
+        loggedIn: loginStatus.loggedIn
+      });
+    } else if (!isInitializing) {
+      await initSession(true);
+      const loginStatus = await checkLoginStatus(false);
+      res.json({
+        connected: !!globalSession,
+        debugUrl: globalSession?.debugUrl,
+        liveUrls: globalSession?.liveUrls,
+        sessionId: globalSession?.sessionId,
+        contextId: currentContextId,
+        loggedIn: loginStatus.loggedIn
+      });
+    } else {
+      while (isInitializing) await sleep(500);
+      const loginStatus = await checkLoginStatus(false);
+      res.json({
+        connected: !!globalSession?.browser?.isConnected(),
+        debugUrl: globalSession?.debugUrl,
+        liveUrls: globalSession?.liveUrls,
+        sessionId: globalSession?.sessionId,
+        contextId: currentContextId,
+        loggedIn: loginStatus.loggedIn
+      });
+    }
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
 });
 
-//Shutdown the instance saving the auth cookies
+// Start a campaign
+app.post('/api/campaign/start', async (req, res) => {
+  const { urls, workflow } = req.body;
+
+  if (!urls || !Array.isArray(urls) || urls.length === 0) {
+    return res.status(400).json({ error: 'URLs are required' });
+  }
+
+  if (currentJob?.status === 'running') {
+    return res.status(409).json({ error: 'A campaign is already running' });
+  }
+
+  // Clear old events
+  jobEvents = [];
+  eventIdCounter = 0;
+
+  // Start campaign in background (don't await)
+  runCampaign(urls, workflow);
+
+  res.json({
+    success: true,
+    jobId: currentJob?.id,
+    message: 'Campaign started'
+  });
+});
+
+// Stop campaign
+app.post('/api/campaign/stop', (req, res) => {
+  if (currentJob && currentJob.status === 'running') {
+    currentJob.status = 'stopped';
+    addEvent('campaign-stopped');
+    res.json({ success: true, message: 'Campaign stopped' });
+  } else {
+    res.json({ success: false, message: 'No running campaign' });
+  }
+});
+
+// Get campaign status and events (polling endpoint)
+app.get('/api/campaign/status', (req, res) => {
+  const lastEventId = parseInt(req.query.lastEventId) || 0;
+
+  // Get events since lastEventId
+  const newEvents = jobEvents.filter(e => e.id > lastEventId);
+
+  res.json({
+    job: currentJob ? {
+      id: currentJob.id,
+      status: currentJob.status,
+      current: currentJob.current,
+      total: currentJob.total
+    } : null,
+    events: newEvents
+  });
+});
+
+// Save session and shutdown
+app.post('/api/session/save', async (req, res) => {
+  await shutdown();
+  res.json({ success: true });
+});
+
+// Shutdown the instance saving the auth cookies
 async function shutdown() {
   if (isShuttingDown) return;
   isShuttingDown = true;
+  stopHeartbeat();
 
   console.log('\nShutting down...');
-  if (keepAliveInterval) clearInterval(keepAliveInterval);
 
   if (globalSession) {
     try {
@@ -448,9 +598,8 @@ async function shutdown() {
     } catch {}
 
     try {
-      await bb.sessions.update(globalSession.sessionId, { 
-        status: 'REQUEST_RELEASE', 
-        projectId: BROWSERBASE_PROJECT_ID 
+      await bb.sessions.update(globalSession.sessionId, {
+        status: 'REQUEST_RELEASE'
       });
     } catch {}
   }
@@ -462,7 +611,7 @@ async function shutdown() {
 process.on('SIGINT', shutdown);
 process.on('SIGTERM', shutdown);
 
-httpServer.listen(3001, () => {
+app.listen(3001, () => {
   console.log('Server: http://localhost:3001');
   console.log(`Context: ${CONTEXT_ID || '(new)'}`);
 });

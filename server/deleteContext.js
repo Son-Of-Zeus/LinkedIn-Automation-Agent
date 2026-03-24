@@ -1,6 +1,7 @@
 import dotenv from 'dotenv';
 import path from 'path';
 import { fileURLToPath } from 'url';
+import { Browserbase } from '@browserbasehq/sdk';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -8,22 +9,13 @@ dotenv.config({ path: path.join(__dirname, '.env') });
 
 async function deleteContext(contextId) {
   try {
-    const response = await fetch(
-      `https://api.browserbase.com/v1/contexts/${contextId}`,
-      {
-        method: 'DELETE',
-        headers: {
-          'X-BB-API-Key': process.env.BROWSERBASE_API_KEY,
-        },
-      }
-    );
-    
-    if (response.ok) {
-      console.log('Context deleted successfully:', response.status);
-    } else {
-      const errorBody = await response.text();
-      console.error('Error deleting context:', response.status, errorBody);
+    if (!process.env.BROWSERBASE_API_KEY) {
+      throw new Error('Missing BROWSERBASE_API_KEY in server/.env');
     }
+
+    const bb = new Browserbase({ apiKey: process.env.BROWSERBASE_API_KEY });
+    await bb.contexts.delete(contextId);
+    console.log('Context deleted successfully');
   } catch (error) {
     console.error('Error deleting context:', error.message);
   }
