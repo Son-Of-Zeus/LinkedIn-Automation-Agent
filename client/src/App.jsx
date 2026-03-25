@@ -66,12 +66,26 @@ const LoginOverlay = memo(function LoginOverlay({ iframeUrl, onRefresh }) {
       className="absolute inset-0 flex items-center justify-center"
       style={{ background: 'var(--bg)', opacity: 0.95 }}
     >
-      <div className="w-[min(1000px,92vw)] h-[min(700px,88vh)] p-4 border flex flex-col" style={{ background: 'var(--bg)', borderColor: 'var(--border-strong)' }}>
+      <div
+        className="p-4 border flex flex-col"
+        style={{
+          background: 'var(--bg)',
+          borderColor: 'var(--border-strong)',
+          width: 'min(1000px, 92vw)',
+          height: 'min(700px, 88vh)',
+          minWidth: '420px',
+          minHeight: '300px',
+          maxWidth: '96vw',
+          maxHeight: '92vh',
+          resize: 'both',
+          overflow: 'hidden',
+        }}
+      >
         <div className="flex items-center justify-between gap-4 pb-3 border-b" style={{ borderColor: 'var(--border)' }}>
           <div>
             <div className="font-mono text-sm tracking-wider" style={{ color: 'var(--text)' }}>LOGIN REQUIRED</div>
             <div className="font-mono text-[11px]" style={{ color: 'var(--text-muted)' }}>
-              Sign in inside this iframe. The app keeps checking auth and unlocks automatically.
+              Sign in inside this window. The app keeps checking auth and unlocks automatically.
             </div>
           </div>
           <button
@@ -94,7 +108,7 @@ const LoginOverlay = memo(function LoginOverlay({ iframeUrl, onRefresh }) {
           ) : (
             <div className="w-full h-full flex items-center justify-center">
               <span className="font-mono text-[11px] tracking-widest" style={{ color: 'var(--text-subtle)' }}>
-                WAITING FOR DEBUG URL
+                WAITING FOR BROWSERBASE
               </span>
             </div>
           )}
@@ -252,74 +266,164 @@ const LogPanel = memo(function LogPanel({ logs, isRunning, onClear }) {
 });
 
 const LiveViewPanel = memo(function LiveViewPanel({ liveViewUrl }) {
-  const [isFullscreen, setIsFullscreen] = useState(false);
-  const [panelSize, setPanelSize] = useState({ width: 620, height: 420 });
+  const [pos, setPos] = useState({ x: -1, y: -1 });
+  const [size, setSize] = useState({ width: 480, height: 360 });
+  const [isDragging, setIsDragging] = useState(false);
+  const [isResizing, setIsResizing] = useState(false);
+  const dragRef = useRef(null);
+  const resizeRef = useRef(null);
   const panelRef = useRef(null);
 
+  // Initialize position to bottom-right on first render
   useEffect(() => {
-    if (!panelRef.current || isFullscreen) return;
+    if (pos.x === -1 && pos.y === -1) {
+      const parent = panelRef.current?.parentElement;
+      if (parent) {
+        const rect = parent.getBoundingClientRect();
+        setPos({
+          x: rect.width - size.width - 12,
+          y: rect.height - size.height - 12,
+        });
+      }
+    }
+  }, [pos, size]);
 
-    const observer = new ResizeObserver((entries) => {
-      const entry = entries[0];
-      if (!entry) return;
-      setPanelSize({
-        width: Math.round(entry.contentRect.width),
-        height: Math.round(entry.contentRect.height),
-      });
-    });
+  // Drag handling
+  const onDragStart = useCallback((e) => {
+    if (e.target.closest('[data-resize-handle]')) return;
+    e.preventDefault();
+    dragRef.current = { startX: e.clientX - pos.x, startY: e.clientY - pos.y };
+    setIsDragging(true);
+  }, [pos]);
 
-    observer.observe(panelRef.current);
-    return () => observer.disconnect();
-  }, [isFullscreen]);
+  useEffect(() => {
+    if (!isDragging) return;
+    const onMove = (e) => {
+      const d = dragRef.current;
+      if (!d) return;
+      const parent = panelRef.current?.parentElement;
+      if (!parent) return;
+      const rect = parent.getBoundingClientRect();
+      const nx = Math.max(0, Math.min(e.clientX - d.startX, rect.width - size.width));
+      const ny = Math.max(0, Math.min(e.clientY - d.startY, rect.height - size.height));
+      setPos({ x: nx, y: ny });
+    };
+    const onUp = () => setIsDragging(false);
+    window.addEventListener('mousemove', onMove);
+    window.addEventListener('mouseup', onUp);
+    return () => { window.removeEventListener('mousemove', onMove); window.removeEventListener('mouseup', onUp); };
+  }, [isDragging, size]);
+
+  // Aspect ratio locked to default 480:360 = 4:3
+  const aspectRatio = 480 / 360;
+
+  // Resize handling (bottom-left corner — drag left to grow, right to shrink)
+  const onResizeStart = useCallback((e) => {
+    e.preventDefault();
+    e.stopPropagation();
+    resizeRef.current = { startX: e.clientX, startY: e.clientY, w: size.width, h: size.height, posX: pos.x };
+    setIsResizing(true);
+  }, [size, pos]);
+
+  useEffect(() => {
+    if (!isResizing) return;
+    const onMove = (e) => {
+      const r = resizeRef.current;
+      if (!r) return;
+      const parent = panelRef.current?.parentElement;
+      if (!parent) return;
+      const rect = parent.getBoundingClientRect();
+      // Moving left = larger, moving right = smaller
+      const dx = r.startX - e.clientX;
+      const nw = Math.max(320, Math.min(r.w + dx, r.posX + r.w));
+      const nh = Math.round(nw / aspectRatio);
+      // Clamp height within parent
+      if (pos.y + nh > rect.height) return;
+      const newX = r.posX + (r.w - nw);
+      setSize({ width: nw, height: nh });
+      setPos(p => ({ ...p, x: Math.max(0, newX) }));
+    };
+    const onUp = () => setIsResizing(false);
+    window.addEventListener('mousemove', onMove);
+    window.addEventListener('mouseup', onUp);
+    return () => { window.removeEventListener('mousemove', onMove); window.removeEventListener('mouseup', onUp); };
+  }, [isResizing, pos.y, aspectRatio]);
 
   return (
     <div
       ref={panelRef}
-      className={`absolute border overflow-hidden ${isFullscreen ? 'inset-3 z-50' : 'right-3 bottom-3 z-20'}`}
+      className="absolute z-20 border flex flex-col overflow-hidden"
       style={{
-        background: 'var(--bg-secondary)',
+        left: pos.x === -1 ? undefined : pos.x,
+        top: pos.y === -1 ? undefined : pos.y,
+        width: size.width,
+        height: size.height,
+        background: 'var(--bg)',
         borderColor: 'var(--border-strong)',
-        width: isFullscreen ? 'auto' : `${panelSize.width}px`,
-        height: isFullscreen ? 'auto' : `${panelSize.height}px`,
-        minWidth: isFullscreen ? undefined : '360px',
-        minHeight: isFullscreen ? undefined : '240px',
-        maxWidth: isFullscreen ? undefined : 'calc(100vw - 24px)',
-        maxHeight: isFullscreen ? undefined : 'calc(100vh - 24px)',
-        resize: isFullscreen ? 'none' : 'both',
+        boxShadow: '0 8px 32px rgba(0,0,0,0.18)',
       }}
     >
-      <div className="absolute top-2 right-2 z-10 flex items-center gap-2">
-        <button
-          onClick={() => setIsFullscreen((prev) => !prev)}
-          className="px-2.5 py-1 border font-mono text-[10px] tracking-widest"
-          style={{
-            background: 'color-mix(in srgb, var(--bg) 82%, transparent)',
-            borderColor: 'var(--border-strong)',
-            color: 'var(--text)',
-            backdropFilter: 'blur(2px)',
-          }}
-        >
-          {isFullscreen ? 'EXIT' : 'FULL'}
-        </button>
-      </div>
-      {liveViewUrl ? (
-        <iframe
-          src={liveViewUrl}
-          title="Browserbase Live View"
-          className="w-full h-full"
-          style={{ border: 0, background: 'var(--bg)' }}
-          allow="clipboard-read; clipboard-write"
-        />
-      ) : (
-        <div
-          className="w-full flex items-center justify-center"
-          style={{ height: '100%', background: 'var(--bg)' }}
-        >
-          <span className="font-mono text-[11px] tracking-widest" style={{ color: 'var(--text-subtle)' }}>
-            LIVE URL NOT AVAILABLE YET
-          </span>
+      {/* Title bar — draggable */}
+      <div
+        onMouseDown={onDragStart}
+        className="flex items-center justify-between px-3 py-1.5 border-b shrink-0"
+        style={{
+          borderColor: 'var(--border)',
+          background: 'var(--bg-secondary)',
+          cursor: isDragging ? 'grabbing' : 'grab',
+          userSelect: 'none',
+        }}
+      >
+        <div className="flex items-center gap-2">
+          <span className="w-1.5 h-1.5 rounded-full" style={{ background: liveViewUrl ? '#32d74b' : 'var(--text-subtle)' }} />
+          <span className="font-mono text-[9px] tracking-widest" style={{ color: 'var(--text-muted)' }}>LIVE PREVIEW</span>
         </div>
-      )}
+        <span className="font-mono text-[9px]" style={{ color: 'var(--text-subtle)' }}>⠿</span>
+      </div>
+
+      {/* Content */}
+      <div className="flex-1 relative">
+        {/* Block pointer events on iframe while dragging/resizing */}
+        {(isDragging || isResizing) && <div className="absolute inset-0 z-10" />}
+        {liveViewUrl ? (
+          <iframe
+            src={liveViewUrl}
+            title="Browserbase Live View"
+            className="absolute inset-0 w-full h-full"
+            style={{ border: 0, background: 'var(--bg)' }}
+            allow="clipboard-read; clipboard-write"
+          />
+        ) : (
+          <div className="absolute inset-0 flex items-center justify-center" style={{ background: 'var(--bg)' }}>
+            <span className="font-mono text-[11px] tracking-widest" style={{ color: 'var(--text-subtle)' }}>
+              LIVE PREVIEW NOT AVAILABLE YET
+            </span>
+          </div>
+        )}
+      </div>
+
+      {/* Resize handle — bottom-left */}
+      <div
+        data-resize-handle
+        onMouseDown={onResizeStart}
+        style={{
+          position: 'absolute',
+          bottom: 0,
+          left: 0,
+          width: 16,
+          height: 16,
+          cursor: 'nesw-resize',
+          zIndex: 20,
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'center',
+        }}
+      >
+        <svg width="8" height="8" viewBox="0 0 8 8" style={{ opacity: 0.35 }}>
+          <line x1="0" y1="2" x2="6" y2="8" stroke="var(--text-muted)" strokeWidth="1.5" />
+          <line x1="0" y1="5" x2="3" y2="8" stroke="var(--text-muted)" strokeWidth="1.5" />
+        </svg>
+      </div>
     </div>
   );
 });
@@ -458,7 +562,17 @@ export default function App() {
   }, []);
 
   const getLiveViewUrl = useCallback((sessionData = {}) => {
+    const pageLiveUrl = Array.isArray(sessionData?.liveUrls?.pages)
+      ? sessionData.liveUrls.pages
+          .map((page) => {
+            if (typeof page === 'string') return page;
+            return page?.debuggerFullscreenUrl || page?.debuggerUrl || page?.url || '';
+          })
+          .find(Boolean)
+      : '';
+
     return (
+      pageLiveUrl ||
       sessionData?.liveUrls?.debuggerFullscreenUrl ||
       sessionData?.liveUrls?.debuggerUrl ||
       sessionData?.debugUrl ||
@@ -1040,7 +1154,7 @@ export default function App() {
             <div className="absolute top-3 left-3 font-mono text-[9px]" style={{ color: 'var(--text-subtle)' }}>WORKFLOW</div>
             <div className="absolute bottom-3 right-3 font-mono text-[9px]" style={{ color: 'var(--text-subtle)' }}>{workflow.length} NODES</div>
 
-            <LiveViewPanel liveViewUrl={liveViewUrl} />
+            {loggedIn && <LiveViewPanel liveViewUrl={liveViewUrl} />}
 
             {!loggedIn && (
               <LoginOverlay

@@ -56,6 +56,7 @@ let eventIdCounter = 0;
 let heartbeatInterval = null;
 
 const CDP_HEARTBEAT_INTERVAL_MS = 5 * 60 * 1000;
+const DESKTOP_VIEWPORT = { width: 1440, height: 900 };
 
 const sleep = ms => new Promise(r => setTimeout(r, ms));
 
@@ -126,6 +127,12 @@ async function createSession(contextId) {
   return session;
 }
 
+async function ensureDesktopViewport(page) {
+  try {
+    await page.setViewportSize(DESKTOP_VIEWPORT);
+  } catch {}
+}
+
 async function initSession(emitEvents = true) {
   if (globalSession?.browser?.isConnected()) {
     return globalSession;
@@ -187,6 +194,7 @@ async function initSession(emitEvents = true) {
 
     page.setDefaultNavigationTimeout(60000);
     page.setDefaultTimeout(30000);
+    await ensureDesktopViewport(page);
     startHeartbeat(page);
 
     globalSession = { browser, page, sessionId: session.id, debugUrl, liveUrls };
@@ -382,6 +390,7 @@ const ACTION_HANDLERS = {
 async function runWorkflow(profileUrl, workflow) {
   const session = await initSession(false);
   const { page } = session;
+  await ensureDesktopViewport(page);
   const results = [];
   let profileData = {};
 
@@ -424,6 +433,7 @@ async function checkLoginStatus(navigate = false) {
     if (url.includes('/feed') || url.includes('/in/')) {
       return { loggedIn: true };
     } else if (navigate) {
+      await ensureDesktopViewport(globalSession.page);
       await globalSession.page.goto('https://www.linkedin.com/feed/', { waitUntil: 'domcontentloaded', timeout: 30000 });
       const newUrl = globalSession.page.url();
       return { loggedIn: newUrl.includes('/feed') };
@@ -485,6 +495,7 @@ async function runCampaign(urls, workflow) {
 app.get('/api/session', async (req, res) => {
   try {
     if (globalSession?.browser?.isConnected()) {
+      await ensureDesktopViewport(globalSession.page);
       const loginStatus = await checkLoginStatus(false);
       res.json({
         connected: true,
@@ -496,6 +507,9 @@ app.get('/api/session', async (req, res) => {
       });
     } else if (!isInitializing) {
       await initSession(true);
+      if (globalSession?.page) {
+        await ensureDesktopViewport(globalSession.page);
+      }
       const loginStatus = await checkLoginStatus(false);
       res.json({
         connected: !!globalSession,
@@ -507,6 +521,9 @@ app.get('/api/session', async (req, res) => {
       });
     } else {
       while (isInitializing) await sleep(500);
+      if (globalSession?.page) {
+        await ensureDesktopViewport(globalSession.page);
+      }
       const loginStatus = await checkLoginStatus(false);
       res.json({
         connected: !!globalSession?.browser?.isConnected(),
